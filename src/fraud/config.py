@@ -1,3 +1,4 @@
+import os
 import random
 from pathlib import Path
 
@@ -13,6 +14,9 @@ RAW_DATA_DIR = DATA_DIR / "raw"
 PROCESSED_DATA_DIR = DATA_DIR / "processed"
 RAW_DATA_FILE = RAW_DATA_DIR / "creditcard.csv"
 
+KAGGLE_DATASET_PATH = "mlg-ulb/creditcardfraud"
+os.environ["KAGGLE_CACHE_HOME"] = str(RAW_DATA_DIR.absolute())
+
 RESULTS_DIR = PROJECT_ROOT / "results"
 FIGURES_DIR = RESULTS_DIR / "figures"
 METRICS_DIR = RESULTS_DIR / "metrics"
@@ -22,6 +26,7 @@ for _d in (PROCESSED_DATA_DIR, FIGURES_DIR, METRICS_DIR):
     _d.mkdir(parents=True, exist_ok=True)
 
 SEED = 42
+
 
 def set_seed(seed: int = SEED, deterministic: bool = True) -> None:
     random.seed(seed)

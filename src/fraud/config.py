@@ -21,6 +21,8 @@ RESULTS_DIR = PROJECT_ROOT / "results"
 FIGURES_DIR = RESULTS_DIR / "figures"
 METRICS_DIR = RESULTS_DIR / "metrics"
 
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 # create output directories on import so downstream code can write without checks
 for _d in (PROCESSED_DATA_DIR, FIGURES_DIR, METRICS_DIR):
     _d.mkdir(parents=True, exist_ok=True)

@@ -1,10 +1,10 @@
 import numpy as np
-from numpy.random import standard_cauchy
+from sklearn.metrics import classification_report, roc_auc_score
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 
-from fraud.config import FIGURES_DIR, set_seed
-from fraud.data import ensure_dataset, load_raw
+from fraud.config import DEVICE, FIGURES_DIR, set_seed
+from fraud.data import build_torch_data_loader, ensure_dataset, load_raw
 from fraud.eda import (
     plot_amount,
     plot_amount_by_class,
@@ -12,6 +12,7 @@ from fraud.eda import (
     plot_time_of_day,
     summarize,
 )
+from fraud.fraud_autoencoder import FraudAutoencoder
 
 
 def main():
@@ -63,10 +64,45 @@ def main():
 
     # Normalize features
     scaler = StandardScaler()
-    X_normal_train = scaler.fit_transform(X_train_raw)  # fit + transform
-    X_normal_test = scaler.transform(X_val_raw)  # transform only
+    X_normal_train = scaler.fit_transform(X_normal_train)  # fit + transform
+    X_normal_test = scaler.transform(X_normal_test)  # transform only
     X_fraud = scaler.transform(X_fraud)  # transform only
     X_normal = scaler.transform(X_normal)
+
+    INPUT_DIM = X_normal_train.shape[1]
+    print(f"\nInput dimension: {INPUT_DIM} features")
+
+    ##########################################################
+    ### Training
+    ##########################################################
+
+    train_loader = build_torch_data_loader(X_normal_train, batch_size=32, shuffle=True)
+    test_loader = build_torch_data_loader(X_normal_test, batch_size=32, shuffle=False)
+
+    model = FraudAutoencoder(input_dim=INPUT_DIM, latent_dim=16, lr=1e-3).to(DEVICE)
+    model.fit(train_loader, test_loader, epochs=25)
+
+    # Find threshold
+    errors_val = model.reconstruction_errors(X_normal_test)
+    threshold = np.percentile(errors_val, 95)  # We allow a 5% margin for generalization
+
+    ##########################################################
+    ### Evaluation
+    ##########################################################
+
+    errors_test = model.reconstruction_errors(X_normal_test)
+    errors_fraud = model.reconstruction_errors(X_fraud)
+
+    all_errors = np.concatenate([errors_test, errors_fraud])
+    all_labels = np.concatenate([np.zeros(len(errors_test)), np.ones(len(errors_fraud))])
+
+    y_pred = (all_errors > threshold).astype(int)
+
+    print("\nClassification Report:")
+    print(classification_report(all_labels, y_pred, target_names=["Normal", "Fraud"]))
+
+    roc_auc = roc_auc_score(all_labels, all_errors)
+    print(f"ROC-AUC score: {roc_auc:.4f}")
 
 
 if __name__ == "__main__":

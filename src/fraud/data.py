@@ -1,7 +1,10 @@
 from pathlib import Path
 
 import kagglehub
+import numpy as np
 import pandas as pd
+import torch
+from torch.utils.data import DataLoader, TensorDataset
 
 from fraud.config import KAGGLE_DATASET_PATH, RAW_DATA_FILE
 
@@ -29,3 +32,10 @@ def load_raw(path: Path = RAW_DATA_FILE) -> pd.DataFrame:
             f"{path.parent}/."
         )
     return pd.read_csv(path)
+
+
+def build_torch_data_loader(
+    X: np.ndarray, batch_size: int = 32, shuffle: bool = False
+) -> DataLoader:
+    X_dataset = TensorDataset(torch.tensor(X, dtype=torch.float32))
+    return DataLoader(X_dataset, batch_size=batch_size, shuffle=shuffle)

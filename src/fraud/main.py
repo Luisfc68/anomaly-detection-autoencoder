@@ -1,9 +1,13 @@
 import numpy as np
-from sklearn.metrics import classification_report, roc_auc_score
+from sklearn.metrics import (
+    average_precision_score,
+    classification_report,
+    roc_auc_score,
+)
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 
-from fraud.config import DEVICE, FIGURES_DIR, set_seed
+from fraud.config import DEVICE, FIGURES_DIR, SEED, set_seed
 from fraud.data import build_torch_data_loader, ensure_dataset, load_raw
 from fraud.eda import (
     plot_amount,
@@ -35,73 +39,81 @@ def main():
     ### Preprocess
     ###########################################################
 
-    # As we can see in the figure, time data is important. In Kaggle:
-    # Feature 'Time' contains the seconds elapsed between each transaction and the first transaction in the dataset.
-
-    # Convert seconds to hours within a 24-hour cycle.
+    # 'Time' is the seconds elapsed since the first transaction (span ~48 h).
+    # Encode the time-of-day cyclically so that hour 23 and hour 0 are close in
+    # feature space.
     df["hour"] = (df["Time"] / 3600) % 24
-
-    # Cyclical encoding: represent hour as a point on a circle.
-    # This ensures hour 23 and hour 0 are close together in feature space.
     df["hour_sin"] = np.sin(2 * np.pi * df["hour"] / 24)
     df["hour_cos"] = np.cos(2 * np.pi * df["hour"] / 24)
-
-    # Drop the raw Time and intermediate hour columns
     df = df.drop(columns=["Time", "hour"])
 
-    # Separate labels from data
-    X = df.drop(columns=["Class"]).values
-    y = df["Class"].values
+    # 'Amount' is heavily right-skewed (skew ~16.98 -> ~0.16 after log1p).
+    # Standardization is applied later, fitted on train only.
+    df["Amount"] = np.log1p(df["Amount"])
 
-    X_normal = X[y == 0]
-    X_fraud = X[y == 1]
+    # V1..V28 are already PCA components no need to re-scale
+    feature_cols = [c for c in df.columns if c != "Class"]
 
-    X_normal_train, X_normal_test = train_test_split(X_normal, test_size=0.1)
+    ###########################################################
+    ### Split — stratified three-way (train / val / test)
+    ###########################################################
+    # Stratify by Class so validation and test keep the real fraud proportion
+    df_train, df_temp = train_test_split(
+        df, test_size=0.30, stratify=df["Class"], random_state=SEED
+    )
+    df_val, df_test = train_test_split(
+        df_temp, test_size=0.50, stratify=df_temp["Class"], random_state=SEED
+    )
 
-    print(f"\nTrain (normal) : {len(X_normal_train):,}")
-    print(f"Val   (normal) : {len(X_normal_test):,}")
-    print(f"Test  (fraud)  : {len(X_fraud):,}")
+    df_train = df_train[df_train["Class"] == 0].copy()
 
-    # Normalize features
+    # Standardize Amount. Scaler fitted on train only, then applied to val/test.
     scaler = StandardScaler()
-    X_normal_train = scaler.fit_transform(X_normal_train)  # fit + transform
-    X_normal_test = scaler.transform(X_normal_test)  # transform only
-    X_fraud = scaler.transform(X_fraud)  # transform only
-    X_normal = scaler.transform(X_normal)
+    df_train["Amount"] = scaler.fit_transform(df_train[["Amount"]])
+    df_val = df_val.copy()
+    df_test = df_test.copy()
+    df_val["Amount"] = scaler.transform(df_val[["Amount"]])
+    df_test["Amount"] = scaler.transform(df_test[["Amount"]])
 
-    INPUT_DIM = X_normal_train.shape[1]
-    print(f"\nInput dimension: {INPUT_DIM} features")
+    X_train = df_train[feature_cols].to_numpy()
+    X_val_normal = df_val.loc[df_val["Class"] == 0, feature_cols].to_numpy()
+    X_test = df_test[feature_cols].to_numpy()
+    y_test = df_test["Class"].to_numpy()
+
+    INPUT_DIM = X_train.shape[1]
+    print(f"\nTrain (legit only) : {len(X_train):,}")
+    print(f"Val   (total/fraud): {len(df_val):,} / {int(df_val['Class'].sum()):,}")
+    print(f"Test  (total/fraud): {len(df_test):,} / {int(df_test['Class'].sum()):,}")
+    print(f"Input dimension    : {INPUT_DIM} features")
 
     ##########################################################
     ### Training
     ##########################################################
 
-    train_loader = build_torch_data_loader(X_normal_train, batch_size=32, shuffle=True)
-    test_loader = build_torch_data_loader(X_normal_test, batch_size=32, shuffle=False)
+    train_loader = build_torch_data_loader(X_train, batch_size=32, shuffle=True)
+    val_loader = build_torch_data_loader(X_val_normal, batch_size=32, shuffle=False)
 
     model = FraudAutoencoder(input_dim=INPUT_DIM, latent_dim=16, lr=1e-3).to(DEVICE)
-    model.fit(train_loader, test_loader, epochs=25)
+    model.fit(train_loader, val_loader, epochs=25)
 
     # Find threshold
-    errors_val = model.reconstruction_errors(X_normal_test)
-    threshold = np.percentile(errors_val, 95)  # We allow a 5% margin for generalization
+    errors_val_normal = model.reconstruction_errors(X_val_normal)
+    threshold = np.percentile(errors_val_normal, 95) # We allow a 5% margin for generalization
 
     ##########################################################
     ### Evaluation
     ##########################################################
 
-    errors_test = model.reconstruction_errors(X_normal_test)
-    errors_fraud = model.reconstruction_errors(X_fraud)
-
-    all_errors = np.concatenate([errors_test, errors_fraud])
-    all_labels = np.concatenate([np.zeros(len(errors_test)), np.ones(len(errors_fraud))])
-
-    y_pred = (all_errors > threshold).astype(int)
+    errors_test = model.reconstruction_errors(X_test)
+    y_pred = (errors_test > threshold).astype(int)
 
     print("\nClassification Report:")
-    print(classification_report(all_labels, y_pred, target_names=["Normal", "Fraud"]))
+    print(classification_report(y_test, y_pred, target_names=["Normal", "Fraud"]))
 
-    roc_auc = roc_auc_score(all_labels, all_errors)
+    # PR-AUC is the primary metric under extreme imbalance; ROC-AUC for reference.
+    pr_auc = average_precision_score(y_test, errors_test)
+    roc_auc = roc_auc_score(y_test, errors_test)
+    print(f"PR-AUC  score: {pr_auc:.4f}")
     print(f"ROC-AUC score: {roc_auc:.4f}")
 
 

@@ -59,16 +59,19 @@ class FraudAutoencoder(nn.Module):
             total += self.criterion(self(batch), batch).item() * batch.size(0)
         return total / len(loader.dataset)
 
-    def fit(self, train_loader, test_loader, epochs: int = 20, verbose: bool = True):
+    def fit(self, train_loader, val_loader, epochs: int = 20, verbose: bool = True):
         """
         Train the autoencoder and keep the best weights by validation loss.
+
+        val_loader holds held-out NORMAL transactions only: the checkpoint is
+        chosen by reconstruction loss on legit data, never on fraud.
         """
         best_val_loss = float("inf")
         best_model_state = None
 
         for epoch in range(1, epochs + 1):
             train_loss = self._train_one_epoch(train_loader)
-            val_loss = self._evaluate(test_loader)
+            val_loss = self._evaluate(val_loader)
 
             self.train_losses.append(train_loss)
             self.val_losses.append(val_loss)
@@ -76,7 +79,7 @@ class FraudAutoencoder(nn.Module):
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 best_model_state = {k: v.clone() for k, v in self.state_dict().items()}
-                marker = " ← best"
+                marker = " <- best"
             else:
                 marker = ""
 

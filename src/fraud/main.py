@@ -14,9 +14,11 @@ from fraud.eda import (
     plot_amount_by_class,
     plot_class_balance,
     plot_time_of_day,
+    save_precision_recall_curve,
     summarize,
 )
 from fraud.fraud_autoencoder import FraudAutoencoder
+from fraud.metrics import get_f1_maximizing_threshold, get_precision_threshold, get_recall_threshold
 
 
 def main():
@@ -77,6 +79,10 @@ def main():
 
     X_train = df_train[feature_cols].to_numpy()
     X_val_normal = df_val.loc[df_val["Class"] == 0, feature_cols].to_numpy()
+
+    X_val = df_val[feature_cols].to_numpy()
+    y_val = df_val["Class"].to_numpy()
+
     X_test = df_test[feature_cols].to_numpy()
     y_test = df_test["Class"].to_numpy()
 
@@ -94,27 +100,48 @@ def main():
     val_loader = build_torch_data_loader(X_val_normal, batch_size=32, shuffle=False)
 
     model = FraudAutoencoder(input_dim=INPUT_DIM, latent_dim=16, lr=1e-3).to(DEVICE)
-    model.fit(train_loader, val_loader, epochs=25)
+    model.fit(train_loader, val_loader, epochs=50)
 
-    # Find threshold
-    errors_val_normal = model.reconstruction_errors(X_val_normal)
-    threshold = np.percentile(errors_val_normal, 95) # We allow a 5% margin for generalization
+    errors_val = model.reconstruction_errors(X_val)
+
+    # Define 3 thresholds:
+    threshold_f1 = get_f1_maximizing_threshold(y_val, errors_val)
+    threshold_rec = get_recall_threshold(y_val, errors_val, min_recall=0.75)
+    threshold_prec = get_precision_threshold(y_val, errors_val, min_precision=0.75)
+
+    thresholds_to_test = {
+        "F1-Maximizing": threshold_f1,
+        "High Recall (Catch more fraud)": threshold_rec,
+        "High Precision (Fewer false alarms)": threshold_prec,
+    }
 
     ##########################################################
     ### Evaluation
     ##########################################################
 
     errors_test = model.reconstruction_errors(X_test)
-    y_pred = (errors_test > threshold).astype(int)
 
-    print("\nClassification Report:")
-    print(classification_report(y_test, y_pred, target_names=["Normal", "Fraud"]))
+    save_precision_recall_curve(
+        y_true=y_test,
+        y_scores=errors_test,
+        output_file=FIGURES_DIR / "precision_recall_curve.png",
+    )
 
     # PR-AUC is the primary metric under extreme imbalance; ROC-AUC for reference.
     pr_auc = average_precision_score(y_test, errors_test)
     roc_auc = roc_auc_score(y_test, errors_test)
     print(f"PR-AUC  score: {pr_auc:.4f}")
     print(f"ROC-AUC score: {roc_auc:.4f}")
+
+    print("=" * 40)
+
+    # Evaluate each threshold strategy
+    for name, thresh in thresholds_to_test.items():
+        print(f"\n--- Strategy: {name} ---")
+        print(f"Threshold Value: {thresh:.6f}")
+
+        y_pred = (errors_test > thresh).astype(int)
+        print(classification_report(y_test, y_pred, target_names=["Normal", "Fraud"]))
 
 
 if __name__ == "__main__":

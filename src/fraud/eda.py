@@ -1,4 +1,5 @@
 import matplotlib
+from sklearn.metrics import average_precision_score, precision_recall_curve
 
 matplotlib.use("Agg")  # save figures, no display needed
 
@@ -84,3 +85,45 @@ def plot_time_of_day(df: pd.DataFrame) -> None:
     fig.tight_layout()
     fig.savefig(FIGURES_DIR / "time_of_day.png", dpi=150)
     plt.close(fig)
+
+
+def save_precision_recall_curve(y_true, y_scores, output_file="precision_recall_curve.png"):
+    """
+    Save a Precision-Recall curve.
+
+    Parameters
+    ----------
+    y_true : array-like
+        True binary labels (0/1).
+    y_scores : array-like
+        Predicted probabilities or decision scores for the positive class.
+    output_file : str
+        Path to save the image.
+    """
+
+    precision, recall, _ = precision_recall_curve(y_true, y_scores)
+    ap_score = average_precision_score(y_true, y_scores)
+
+    baseline = y_true.mean()
+
+    plt.figure(figsize=(8, 6))
+    plt.plot(recall, precision, label=f"AP = {ap_score:.4f}", linewidth=2)
+
+    plt.axhline(
+        baseline,
+        color="red",
+        linestyle="--",
+        label=f"Baseline = {baseline:.4f}",
+    )
+
+    plt.xlabel("Recall")
+    plt.ylabel("Precision")
+    plt.title("Precision-Recall Curve")
+    plt.legend(loc="best")
+    plt.grid(True, alpha=0.3)
+
+    plt.savefig(output_file, dpi=300, bbox_inches="tight")
+    plt.close()
+
+    print(f"Precision-Recall curve saved to: {output_file}")
+

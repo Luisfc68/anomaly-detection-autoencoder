@@ -29,6 +29,7 @@ for _d in (PROCESSED_DATA_DIR, FIGURES_DIR, METRICS_DIR):
 
 SEED = 42
 
+SPLIT_STRATEGIES = ("stratified-random", "temporal")
 
 def set_seed(seed: int = SEED, deterministic: bool = True) -> None:
     random.seed(seed)

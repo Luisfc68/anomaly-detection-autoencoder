@@ -1,24 +1,30 @@
-# Anomaly Detection with Autoencoders on Credit Card Fraud
+# Anomaly Detection with Autoencoders — Credit Card Fraud
 
-An **autoencoder** is trained only on legitimate transactions, and its
-**reconstruction error** is used as an anomaly score. The model is
-compared against three baselines (Isolation Forest, One-Class SVM, and a Gaussian
-density model) on the *Credit Card Fraud Detection* dataset and evaluated
-with metrics suited to extreme class imbalance (PR-AUC and ROC-AUC).
-
-## Requirements
-
-- Python >= 3.11
-- Virtual environment via `venv`; project configuration in `pyproject.toml`
+A complete unsupervised Anomaly Detection pipeline using Autoencoders applied to the [Credit Card Fraud Detection dataset](https://www.kaggle.com/datasets/mlg-ulb/creditcardfraud) (Kaggle).
 
 ## Setup
-1. Create and activate the virtual environment
+
+**1. Create and activate a virtual environment**
+
 ```bash
 python -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
 ```
-2. Install the project
+
+**2. Install the project**
+
 ```bash
-python -m pip install --upgrade pi
+python -m pip install --upgrade pip
 python -m pip install -e .
 ```
+
+## Usage
+
+From the root of the repository:
+
+```bash
+python src/fraud/main.py
+```
+
+Evaluation curves (ROC, PR) and exploratory data figures are marginsaved to the `results/figures/` directory. Console output includes model comparison metrics against baselines, bootstrapped 95% confidence intervals, and detailed performance reports across F1-maximizing, high-recall, and high-precision operational thresholds.
+

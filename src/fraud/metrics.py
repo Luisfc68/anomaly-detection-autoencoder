@@ -2,6 +2,8 @@ import numpy as np
 from sklearn.metrics import (
     average_precision_score,
     precision_recall_curve,
+    precision_score,
+    recall_score,
     roc_auc_score,
 )
 
@@ -95,7 +97,34 @@ def bootstrap_pr_roc_ci(
         "pr_auc": bootstrap_metric_ci(
             y_true, y_scores, average_precision_score, n_boot, alpha, seed
         ),
-        "roc_auc": bootstrap_metric_ci(
-            y_true, y_scores, roc_auc_score, n_boot, alpha, seed
-        ),
+        "roc_auc": bootstrap_metric_ci(y_true, y_scores, roc_auc_score, n_boot, alpha, seed),
+    }
+
+
+def bootstrap_precision_recall_ci(
+    y_true: np.ndarray,
+    y_scores: np.ndarray,
+    threshold: float,
+    n_boot: int = 1000,
+    alpha: float = 0.05,
+    seed: int = SEED,
+) -> dict[str, tuple[float, float, float]]:
+    """
+    Computes bootstrapped CI for threshold-dependent metrics (Precision and Recall).
+    Reuses the existing `bootstrap_metric_ci` function by converting continuous
+    scores to binary predictions based on the provided threshold.
+    """
+    # Convert continuous scores to hard binary predictions
+    y_pred = (y_scores >= threshold).astype(int)
+
+    # Wrappers to handle edge cases where a bootstrap sample predicts 0 frauds (TP+FP=0)
+    def safe_precision(yt, yp):
+        return precision_score(yt, yp, zero_division=0)
+
+    def safe_recall(yt, yp):
+        return recall_score(yt, yp, zero_division=0)
+
+    return {
+        "precision": bootstrap_metric_ci(y_true, y_pred, safe_precision, n_boot, alpha, seed),
+        "recall": bootstrap_metric_ci(y_true, y_pred, safe_recall, n_boot, alpha, seed),
     }

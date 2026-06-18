@@ -1,5 +1,10 @@
 import matplotlib
-from sklearn.metrics import average_precision_score, precision_recall_curve
+from sklearn.metrics import (
+    average_precision_score,
+    precision_recall_curve,
+    roc_auc_score,
+    roc_curve,
+)
 
 matplotlib.use("Agg")  # save figures, no display needed
 
@@ -87,43 +92,74 @@ def plot_time_of_day(df: pd.DataFrame) -> None:
     plt.close(fig)
 
 
-def save_precision_recall_curve(y_true, y_scores, output_file="precision_recall_curve.png"):
+def plot_roc_curve(y_true, y_scores, model_name, split_name):
     """
-    Save a Precision-Recall curve.
-
-    Parameters
-    ----------
-    y_true : array-like
-        True binary labels (0/1).
-    y_scores : array-like
-        Predicted probabilities or decision scores for the positive class.
-    output_file : str
-        Path to save the image.
+    Plots the ROC curve for a single model.
     """
+    plt.figure(figsize=(9, 6))
 
-    precision, recall, _ = precision_recall_curve(y_true, y_scores)
-    ap_score = average_precision_score(y_true, y_scores)
+    # --- Calculate ROC metrics ---
+    fpr, tpr, _ = roc_curve(y_true, y_scores)
+    roc_auc = roc_auc_score(y_true, y_scores)
 
-    baseline = y_true.mean()
+    # --- Plot the curves ---
+    plt.plot(fpr, tpr, label=f"{model_name} (AUC = {roc_auc:.4f})", lw=2, color="#1f77b4")
+    plt.plot([0, 1], [0, 1], color="gray", linestyle="--", label="No Skill")
 
-    plt.figure(figsize=(8, 6))
-    plt.plot(recall, precision, label=f"AP = {ap_score:.4f}", linewidth=2)
-
-    plt.axhline(
-        baseline,
-        color="red",
-        linestyle="--",
-        label=f"Baseline = {baseline:.4f}",
-    )
-
-    plt.xlabel("Recall")
-    plt.ylabel("Precision")
-    plt.title("Precision-Recall Curve")
-    plt.legend(loc="best")
+    # --- Formatting ---
+    plt.xlabel("False Positive Rate", fontsize=12)
+    plt.ylabel("True Positive Rate", fontsize=12)
+    plt.legend(loc="lower right")
     plt.grid(True, alpha=0.3)
 
-    plt.savefig(output_file, dpi=300, bbox_inches="tight")
+    # --- Save and close ---
+    plt.tight_layout()
+
+    # Format the filename cleanly (e.g., "One-Class SVM" -> "one_class_svm")
+    safe_name = model_name.lower().replace(" ", "_").replace("-", "_")
+    output_path = FIGURES_DIR / f"roc_curve_{safe_name}_{split_name}.png"
+
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
+    print(f"Saved {model_name} ROC curve to: {output_path}")
 
-    print(f"Precision-Recall curve saved to: {output_file}")
 
+def plot_pr_curve(y_true, y_scores, model_name, split_name):
+    """
+    Plots the Precision-Recall curve for a single model.
+    """
+    plt.figure(figsize=(9, 6))
+
+    # --- Calculate PR metrics ---
+    precision, recall, _ = precision_recall_curve(y_true, y_scores)
+    pr_auc = average_precision_score(y_true, y_scores)
+    prevalence = y_true.mean()
+
+    # --- Plot the curves ---
+    plt.plot(recall, precision, label=f"{model_name} (AUC = {pr_auc:.4f})", lw=2, color="#1f77b4")
+
+    # The no-skill line for PR is a horizontal line at the prevalence rate
+    plt.plot(
+        [0, 1],
+        [prevalence, prevalence],
+        color="gray",
+        linestyle="--",
+        label=f"No Skill (Prevalence = {prevalence:.4f})",
+    )
+
+    # --- Formatting ---
+    plt.xlabel("Recall", fontsize=12)
+    plt.ylabel("Precision", fontsize=12)
+    plt.legend(loc="upper right")
+    plt.grid(True, alpha=0.3)
+
+    # --- Save and close ---
+    plt.tight_layout()
+
+    # Format the filename cleanly (e.g., "One-Class SVM" -> "one_class_svm")
+    safe_name = model_name.lower().replace(" ", "_").replace("-", "_")
+    output_path = FIGURES_DIR / f"pr_curve_{safe_name}_{split_name}.png"
+
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    print(f"Saved {model_name} PR curve to: {output_path}")

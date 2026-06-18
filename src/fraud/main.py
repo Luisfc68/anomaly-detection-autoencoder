@@ -1,3 +1,5 @@
+import time
+
 import numpy as np
 from sklearn.metrics import classification_report
 from sklearn.preprocessing import StandardScaler
@@ -14,13 +16,15 @@ from fraud.eda import (
     plot_amount,
     plot_amount_by_class,
     plot_class_balance,
+    plot_pr_curve,
+    plot_roc_curve,
     plot_time_of_day,
-    save_precision_recall_curve,
     summarize,
 )
 from fraud.fraud_autoencoder import FraudAutoencoder
 from fraud.metrics import (
     bootstrap_pr_roc_ci,
+    bootstrap_precision_recall_ci,
     get_f1_maximizing_threshold,
     get_precision_threshold,
     get_recall_threshold,
@@ -48,21 +52,29 @@ def compute_or_load_scores(split_name, X_train, X_val_normal, X_val, X_test, inp
         print(f"\nLoading cached scores from {cache}")
         print("(delete this file to retrain from scratch)")
         data = np.load(cache)
-        errors_val = data["errors_val"]
-        scores_by_model = {name: data[slug] for name, slug in _CACHE_KEYS.items()}
-        return errors_val, scores_by_model
 
-    # Autoencoder: trained on legit train, early-stopped on legit val
+        val_scores_by_model = {name: data[f"{slug}_val"] for name, slug in _CACHE_KEYS.items()}
+        test_scores_by_model = {name: data[f"{slug}_test"] for name, slug in _CACHE_KEYS.items()}
+        # Load the new cached fit times
+        fit_times = {name: float(data[f"{slug}_time"]) for name, slug in _CACHE_KEYS.items()}
+
+        return val_scores_by_model, test_scores_by_model, fit_times
+
+    fit_times = {}
+
+    # Autoencoder
     train_loader = build_torch_data_loader(X_train, batch_size=32, shuffle=True)
     val_loader = build_torch_data_loader(X_val_normal, batch_size=32, shuffle=False)
-
     model = FraudAutoencoder(input_dim=input_dim, latent_dim=16, lr=1e-3).to(DEVICE)
-    model.fit(train_loader, val_loader, epochs=50)
 
-    errors_val = model.reconstruction_errors(X_val)
-    scores_by_model = {"Autoencoder": model.reconstruction_errors(X_test)}
+    start_time = time.time()
+    model.fit(train_loader, val_loader, epochs=100)
+    fit_times["Autoencoder"] = time.time() - start_time
 
-    # Baselines: fit on legit train only, score test
+    val_scores_by_model = {"Autoencoder": model.reconstruction_errors(X_val)}
+    test_scores_by_model = {"Autoencoder": model.reconstruction_errors(X_test)}
+
+    # Baselines
     baselines = [
         IsolationForestDetector(),
         OneClassSVMDetector(),
@@ -70,18 +82,31 @@ def compute_or_load_scores(split_name, X_train, X_val_normal, X_val, X_test, inp
     ]
     for detector in baselines:
         print(f"\nFitting baseline: {detector.name} ...")
-        detector.fit(X_train)
-        scores_by_model[detector.name] = detector.anomaly_score(X_test)
-        if getattr(detector, "fit_time_seconds", None) is not None:
-            print(f"  full-sample fit time: {detector.fit_time_seconds:.1f} s")
 
-    np.savez(
-        cache,
-        errors_val=errors_val,
-        **{slug: scores_by_model[name] for name, slug in _CACHE_KEYS.items()},
-    )
+        start_time = time.time()
+        detector.fit(X_train)
+        measured_time = time.time() - start_time
+
+        # If the detector natively tracked its time, use that, else fallback to our measured time
+        final_time = getattr(detector, "fit_time_seconds", measured_time)
+        fit_times[detector.name] = final_time
+
+        val_scores_by_model[detector.name] = detector.anomaly_score(X_val)
+        test_scores_by_model[detector.name] = detector.anomaly_score(X_test)
+
+        print(f"  full-sample fit time: {final_time:.1f} s")
+
+    # Prepare dictionary for saving
+    save_dict = {}
+    for name, slug in _CACHE_KEYS.items():
+        save_dict[f"{slug}_val"] = val_scores_by_model[name]
+        save_dict[f"{slug}_test"] = test_scores_by_model[name]
+        save_dict[f"{slug}_time"] = fit_times[name]
+
+    np.savez(cache, **save_dict)
     print(f"\nSaved scores cache to {cache}")
-    return errors_val, scores_by_model
+
+    return val_scores_by_model, test_scores_by_model, fit_times
 
 
 def _operation_thresholds(y_val, errors_val):
@@ -141,48 +166,72 @@ def run_split_experiment(df, splitter, feature_cols):
     )
     print(f"Input dimension    : {input_dim} features")
 
-    errors_val, scores_by_model = compute_or_load_scores(
+    val_scores_by_model, test_scores_by_model, fit_times = compute_or_load_scores(
         splitter.name, X_train, X_val_normal, X_val, X_test, input_dim
     )
-    errors_test = scores_by_model["Autoencoder"]
 
-    save_precision_recall_curve(
-        y_true=y_test,
-        y_scores=errors_test,
-        output_file=FIGURES_DIR / f"precision_recall_curve_{splitter.name}.png",
+    model_to_plot = "Autoencoder"
+    model_scores = test_scores_by_model[model_to_plot]
+
+    plot_roc_curve(
+        y_true=y_test, y_scores=model_scores, model_name=model_to_plot, split_name=splitter.name
+    )
+
+    # Generate the single PR plot
+    plot_pr_curve(
+        y_true=y_test, y_scores=model_scores, model_name=model_to_plot, split_name=splitter.name
     )
 
     # Evaluation using CI
-    # Bootstrap the test set (resample with replacement) to put a 95% CI around
-    # each point estimate, without retraining any model. PR-AUC is primary; its
-    # no-skill baseline is the prevalence, not 0.5
     prevalence = y_test.mean()
     results = {
+        # Note: We pass test_scores_by_model here to evaluate the test set
         name: bootstrap_pr_roc_ci(y_test, scores)
-        for name, scores in scores_by_model.items()
+        for name, scores in test_scores_by_model.items()
     }
 
-    print("\n" + "=" * 72)
+    print("\n" + "=" * 86)
     print(f"Model comparison on test [{splitter.name}] - point [95% bootstrap CI]")
     print(f"No-skill PR-AUC baseline = prevalence = {prevalence:.4f}")
-    print("=" * 72)
-    print(f"{'Model':<18}{'PR-AUC (primary)':>26}{'ROC-AUC':>26}")
-    print("-" * 72)
-    for name, ci in sorted(
-        results.items(), key=lambda kv: kv[1]["pr_auc"][0], reverse=True
-    ):
+    print("=" * 86)
+    print(f"{'Model':<18}{'Fit Time':>12}{'PR-AUC (primary)':>28}{'ROC-AUC':>28}")
+    print("-" * 86)
+
+    for name, ci in sorted(results.items(), key=lambda kv: kv[1]["pr_auc"][0], reverse=True):
         pr, roc = ci["pr_auc"], ci["roc_auc"]
         pr_str = f"{pr[0]:.4f} [{pr[1]:.4f}, {pr[2]:.4f}]"
         roc_str = f"{roc[0]:.4f} [{roc[1]:.4f}, {roc[2]:.4f}]"
-        print(f"{name:<18}{pr_str:>26}{roc_str:>26}")
 
-    print("\n" + "=" * 40)
-    thresholds_to_test = _operation_thresholds(y_val, errors_val)
-    for name, thresh in thresholds_to_test.items():
-        print(f"\n--- Strategy: {name} ---")
-        print(f"Threshold Value: {thresh:.6f}")
-        y_pred = (errors_test > thresh).astype(int)
-        print(classification_report(y_test, y_pred, target_names=["Normal", "Fraud"]))
+        # Pull the specific time and format it
+        time_str = f"{fit_times[name]:.1f}s"
+
+        print(f"{name:<18}{time_str:>12}{pr_str:>28}{roc_str:>28}")
+
+    for model_name, test_scores in test_scores_by_model.items():
+        print(f"\n\n{'=' * 60}")
+        print(f"Evaluating Threshold Strategies for: {model_name}")
+        print(f"{'=' * 60}")
+
+        val_scores = val_scores_by_model[model_name]
+        thresholds_to_test = _operation_thresholds(y_val, val_scores)
+
+        for strat_name, thresh in thresholds_to_test.items():
+            print(f"\n--- Strategy: {strat_name} ---")
+            print(f"Threshold Value: {thresh:.6f}")
+
+            # Generate predictions using THIS model's threshold
+            y_pred = (test_scores > thresh).astype(int)
+            print(classification_report(y_test, y_pred, target_names=["Normal", "Fraud"]))
+
+            # Bootstrapped CI for Precision & Recall
+            pr_metrics = bootstrap_precision_recall_ci(y_test, test_scores, threshold=thresh)
+
+            p_pt, p_lo, p_hi = pr_metrics["precision"]
+            r_pt, r_lo, r_hi = pr_metrics["recall"]
+
+            print("  [95% Bootstrap CI for Fraud Class]")
+            print(f"  -> Precision: {p_pt:.4f} [{p_lo:.4f}, {p_hi:.4f}]")
+            print(f"  -> Recall:    {r_pt:.4f} [{r_lo:.4f}, {r_hi:.4f}]")
 
 
 def main():
@@ -204,6 +253,9 @@ def main():
     ###########################################################
     ### Preprocess
     ###########################################################
+
+    # Drop duplicated data
+    df = df.drop_duplicates()
 
     # 'Time' is the seconds elapsed since the first transaction (span ~48 h).
     # Encode the time-of-day cyclically so that hour 23 and hour 0 are close in

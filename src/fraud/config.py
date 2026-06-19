@@ -31,6 +31,11 @@ SEED = 42
 
 SPLIT_STRATEGIES = ("stratified-random", "temporal")
 
+COST_FN = 100.0  # cost of a missed fraud (false negative)
+COST_FP = 50.0    # cost of a false alarm (false positive)
+
+COST_RATIOS = (2, 5, 10, 50, 100, 1000)
+
 def set_seed(seed: int = SEED, deterministic: bool = True) -> None:
     random.seed(seed)
     np.random.seed(seed)

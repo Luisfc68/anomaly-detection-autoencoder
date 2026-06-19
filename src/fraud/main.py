@@ -5,6 +5,9 @@ from sklearn.metrics import classification_report
 from sklearn.preprocessing import StandardScaler
 
 from fraud.config import (
+    COST_FN,
+    COST_FP,
+    COST_RATIOS,
     DEVICE,
     FIGURES_DIR,
     METRICS_DIR,
@@ -20,14 +23,18 @@ from fraud.eda import (
     plot_roc_curve,
     plot_time_of_day,
     summarize,
+    summarize_duplicates,
 )
 from fraud.fraud_autoencoder import FraudAutoencoder
 from fraud.metrics import (
     bootstrap_pr_roc_ci,
     bootstrap_precision_recall_ci,
+    confusion_cost,
+    cost_sensitivity,
     get_f1_maximizing_threshold,
     get_precision_threshold,
     get_recall_threshold,
+    min_cost_threshold,
 )
 from fraud.models.gaussian import GaussianDensityDetector
 from fraud.models.isolation_forest import IsolationForestDetector
@@ -233,6 +240,61 @@ def run_split_experiment(df, splitter, feature_cols):
             print(f"  -> Precision: {p_pt:.4f} [{p_lo:.4f}, {p_hi:.4f}]")
             print(f"  -> Recall:    {r_pt:.4f} [{r_lo:.4f}, {r_hi:.4f}]")
 
+    # Minimum expected cost
+    print("\n\n" + "=" * 72)
+    print(
+        f"Minimum-cost operating point [{splitter.name}]  "
+        f"(C_FN={COST_FN:g}, C_FP={COST_FP:g})"
+    )
+    print("Threshold chosen on validation; FP/FN and cost reported on test.")
+    print("=" * 72)
+    print(f"{'Model':<18}{'Test FP':>9}{'Test FN':>9}{'Test cost':>12}")
+    print("-" * 72)
+
+    cost_rows = {}
+    for model_name in test_scores_by_model:
+        t_star = min_cost_threshold(
+            y_val, val_scores_by_model[model_name], COST_FN, COST_FP
+        )
+        y_pred = (test_scores_by_model[model_name] >= t_star).astype(int)
+        cost_rows[model_name] = confusion_cost(y_test, y_pred, COST_FN, COST_FP)
+
+    for model_name, c in sorted(cost_rows.items(), key=lambda kv: kv[1]["cost"]):
+        print(f"{model_name:<18}{c['fp']:>9}{c['fn']:>9}{c['cost']:>12.1f}")
+
+    print("-" * 72)
+    print(
+        f"{'(flag nothing)':<18}{0:>9}{n_test_fraud:>9}{COST_FN * n_test_fraud:>12.1f}"
+    )
+
+    # Cost-ratio sensitivity (how the cost-optimal operating point shifts as a missed
+    # fraud (FN) becomes more expensive vs a false alarm (FP))
+    print("\n\n" + "=" * 72)
+    print(f"Cost-ratio sensitivity [{splitter.name}]  (C_FP=1; columns are C_FN:C_FP)")
+    print("Test cost per model; '*' = model's cost-optimal action is to flag nothing")
+    print("=" * 72)
+    header = f"{'Model':<18}" + "".join(f"{f'{r}:1':>11}" for r in COST_RATIOS)
+    print(header)
+    print("-" * len(header))
+
+    for model_name in test_scores_by_model:
+        sens = cost_sensitivity(
+            y_val,
+            val_scores_by_model[model_name],
+            y_test,
+            test_scores_by_model[model_name],
+            COST_RATIOS,
+        )
+        cells = "".join(
+            f"{sens[r]['cost']:>10.0f}{'*' if sens[r]['flags_nothing'] else ' '}"
+            for r in COST_RATIOS
+        )
+        print(f"{model_name:<18}{cells}")
+
+    print("-" * len(header))
+    baseline = "".join(f"{r * n_test_fraud:>10.0f} " for r in COST_RATIOS)
+    print(f"{'(flag nothing)':<18}{baseline}")
+
 
 def main():
     # Initial setup
@@ -254,8 +316,11 @@ def main():
     ### Preprocess
     ###########################################################
 
-    # Drop duplicated data
+    # Inspect duplicates before dropping them
+    summarize_duplicates(df)
+    n_before = len(df)
     df = df.drop_duplicates()
+    print(f"  Dropped {n_before - len(df):,} rows -> {len(df):,} remain")
 
     # 'Time' is the seconds elapsed since the first transaction (span ~48 h).
     # Encode the time-of-day cyclically so that hour 23 and hour 0 are close in

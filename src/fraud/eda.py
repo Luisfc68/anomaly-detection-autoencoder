@@ -28,13 +28,33 @@ def summarize(df: pd.DataFrame) -> None:
     print("\nAmount summary (all transactions):")
     print(df["Amount"].describe().to_string())
     print("zeros:\t", int((amt == 0).sum()))
-    # TODO use this to justify the log1p normalization in the report
     print("skewness raw:   ", skew(amt))
     print("skewness log1p: ", skew(np.log1p(amt)))
     print("\nAmount median by class:")
     print(df.groupby("Class")["Amount"].median().to_string())
     span_h = (df["Time"].max() - df["Time"].min()) / 3600.0
     print(f"\nTime span: {df['Time'].min():.0f}..{df['Time'].max():.0f} s (~{span_h:.1f} h)")
+
+
+def summarize_duplicates(df: pd.DataFrame) -> dict:
+    redundant = df.duplicated()  # extra copies that drop_duplicates() will remove
+    n_redundant = int(redundant.sum())
+    n_redundant_fraud = int(df.loc[redundant, "Class"].sum())
+    n_redundant_legit = n_redundant - n_redundant_fraud
+    n_rows_involved = int(df.duplicated(keep=False).sum())
+
+    print("\nDuplicate analysis (before dropping):")
+    print(f"  Rows involved in any duplication : {n_rows_involved:,}")
+    print(f"  Redundant copies (to be removed) : {n_redundant:,}")
+    print(f"    of which fraud                 : {n_redundant_fraud:,}")
+    print(f"    of which legit                 : {n_redundant_legit:,}")
+
+    return {
+        "redundant": n_redundant,
+        "redundant_fraud": n_redundant_fraud,
+        "redundant_legit": n_redundant_legit,
+        "rows_involved": n_rows_involved,
+    }
 
 
 def plot_class_balance(df: pd.DataFrame) -> None:
